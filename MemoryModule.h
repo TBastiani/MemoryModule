@@ -44,19 +44,19 @@ typedef FARPROC (*CustomGetProcAddressFunc)(HCUSTOMMODULE, LPCSTR, void *);
 typedef void (*CustomFreeLibraryFunc)(HCUSTOMMODULE, void *);
 
 /**
- * Load DLL from memory location.
+ * Load executable from memory location.
  *
  * All dependencies are resolved using default LoadLibrary/GetProcAddress
  * calls through the Windows API.
  */
-HMEMORYMODULE MemoryLoadLibrary(const void *);
+HMEMORYMODULE MemoryLoadExecutable(const void *);
 
 /**
- * Load DLL from memory location using custom dependency resolvers.
+ * Load executable from memory location using custom dependency resolvers.
  *
  * Dependencies will be resolved using passed callback methods.
  */
-HMEMORYMODULE MemoryLoadLibraryEx(const void *,
+HMEMORYMODULE MemoryLoadExecutableEx(const void *,
     CustomLoadLibraryFunc,
     CustomGetProcAddressFunc,
     CustomFreeLibraryFunc,
@@ -68,9 +68,12 @@ HMEMORYMODULE MemoryLoadLibraryEx(const void *,
 FARPROC MemoryGetProcAddress(HMEMORYMODULE, LPCSTR);
 
 /**
- * Free previously loaded DLL.
+ * Free previously loaded executable.
+ * 
+ * The problem is that if the executable entry point gets called we don't get
+ * an opportunity to call this. Still useful if we're just loading resources.
  */
-void MemoryFreeLibrary(HMEMORYMODULE);
+void MemoryFreeExecutable(HMEMORYMODULE);
 
 /**
  * Find the location of a resource with the specified type and name.
@@ -101,6 +104,11 @@ int MemoryLoadString(HMEMORYMODULE, UINT, LPTSTR, int);
  * Load a string resource with a given language.
  */
 int MemoryLoadStringEx(HMEMORYMODULE, UINT, LPTSTR, int, WORD);
+
+/**
+  * Call executable entry point
+  */
+void MemoryCallEntryPoint(HMEMORYMODULE module);
 
 #ifdef __cplusplus
 }

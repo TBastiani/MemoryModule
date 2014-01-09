@@ -49,19 +49,19 @@
 
 #include "MemoryModule.h"
 
+typedef int (WINAPI *ExeEntryProc)(void);
+
 typedef struct {
     PIMAGE_NT_HEADERS headers;
     unsigned char *codeBase;
     HCUSTOMMODULE *modules;
     int numModules;
-    int initialized;
     CustomLoadLibraryFunc loadLibrary;
     CustomGetProcAddressFunc getProcAddress;
     CustomFreeLibraryFunc freeLibrary;
     void *userdata;
+	ExeEntryProc entryPoint;
 } MEMORYMODULE, *PMEMORYMODULE;
-
-typedef BOOL (WINAPI *DllEntryProc)(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpReserved);
 
 #define GET_HEADER_DICTIONARY(module, idx)	&(module)->headers->OptionalHeader.DataDirectory[idx]
 
@@ -339,12 +339,12 @@ static void _FreeLibrary(HCUSTOMMODULE module, void *userdata)
     FreeLibrary((HMODULE) module);
 }
 
-HMEMORYMODULE MemoryLoadLibrary(const void *data)
+HMEMORYMODULE MemoryLoadExecutable(const void *data)
 {
-    return MemoryLoadLibraryEx(data, _LoadLibrary, _GetProcAddress, _FreeLibrary, NULL);
+    return MemoryLoadExecutableEx(data, _LoadLibrary, _GetProcAddress, _FreeLibrary, NULL);
 }
 
-HMEMORYMODULE MemoryLoadLibraryEx(const void *data,
+HMEMORYMODULE MemoryLoadExecutableEx(const void *data,
     CustomLoadLibraryFunc loadLibrary,
     CustomGetProcAddressFunc getProcAddress,
     CustomFreeLibraryFunc freeLibrary,
@@ -355,8 +355,6 @@ HMEMORYMODULE MemoryLoadLibraryEx(const void *data,
     PIMAGE_NT_HEADERS old_header;
     unsigned char *code, *headers;
     SIZE_T locationDelta;
-    DllEntryProc DllEntry;
-    BOOL successfull;
 
     dos_header = (PIMAGE_DOS_HEADER)data;
     if (dos_header->e_magic != IMAGE_DOS_SIGNATURE) {
@@ -400,7 +398,6 @@ HMEMORYMODULE MemoryLoadLibraryEx(const void *data,
     result->codeBase = code;
     result->numModules = 0;
     result->modules = NULL;
-    result->initialized = 0;
     result->loadLibrary = loadLibrary;
     result->getProcAddress = getProcAddress;
     result->freeLibrary = freeLibrary;
@@ -440,24 +437,25 @@ HMEMORYMODULE MemoryLoadLibraryEx(const void *data,
     // TLS callbacks are executed BEFORE the main loading
     ExecuteTLS(result);
 
-    // get entry point of loaded library
-    if (result->headers->OptionalHeader.AddressOfEntryPoint != 0) {
-        DllEntry = (DllEntryProc) (code + result->headers->OptionalHeader.AddressOfEntryPoint);
-        // notify library about attaching to process
-        successfull = (*DllEntry)((HINSTANCE)code, DLL_PROCESS_ATTACH, 0);
-        if (!successfull) {
-            SetLastError(ERROR_DLL_INIT_FAILED);
-            goto error;
-        }
-        result->initialized = 1;
-    }
+    // get entry point of loaded executable
+    if (result->headers->OptionalHeader.AddressOfEntryPoint != 0)
+	{
+        result->entryPoint = (ExeEntryProc) (code + result->headers->OptionalHeader.AddressOfEntryPoint);
+	}
 
     return (HMEMORYMODULE)result;
 
 error:
     // cleanup
-    MemoryFreeLibrary(result);
+    MemoryFreeExecutable(result);
     return NULL;
+}
+
+void MemoryCallEntryPoint(HMEMORYMODULE module)
+{
+	// Don't do this upon MemoryLoadExecutable to get a chance to free some RAM.
+	// argc and argv are loaded from the environment, they will be the same as main()
+	((PMEMORYMODULE) module)->entryPoint();
 }
 
 FARPROC MemoryGetProcAddress(HMEMORYMODULE module, LPCSTR name)
@@ -507,19 +505,12 @@ FARPROC MemoryGetProcAddress(HMEMORYMODULE module, LPCSTR name)
     return (FARPROC) (codeBase + (*(DWORD *) (codeBase + exports->AddressOfFunctions + (idx*4))));
 }
 
-void MemoryFreeLibrary(HMEMORYMODULE mod)
+void MemoryFreeExecutable(HMEMORYMODULE mod)
 {
     int i;
     PMEMORYMODULE module = (PMEMORYMODULE)mod;
 
     if (module != NULL) {
-        if (module->initialized != 0) {
-            // notify library about detaching from process
-            DllEntryProc DllEntry = (DllEntryProc) (module->codeBase + module->headers->OptionalHeader.AddressOfEntryPoint);
-            (*DllEntry)((HINSTANCE)module->codeBase, DLL_PROCESS_DETACH, 0);
-            module->initialized = 0;
-        }
-
         if (module->modules != NULL) {
             // free previously opened libraries
             for (i=0; i<module->numModules; i++) {
